@@ -55,5 +55,6 @@
                 "Dcat\\Admin\\AdminServiceProvider"
             ]
         }
-    }
+    },
+    "minimum-stability": "stable"
 }
