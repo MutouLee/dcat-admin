@@ -2,6 +2,7 @@
     "name": "dobeen/dcat-admin",
     "description": "dcat admin",
     "type": "library",
+    "version": "2.2.3",
     "keywords": [
         "dcat",
         "laravel",
