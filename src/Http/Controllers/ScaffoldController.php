@@ -195,7 +195,7 @@ class ScaffoldController extends Controller
 
         $tables = collect($this->getDatabaseColumns($db, $table))
             ->filter(function ($v, $k) use ($db) {
-                return $k == $db;
+                return addslashes($k) == $db;
             })->map(function ($v) use ($table) {
                 return Arr::get($v, $table);
             })
@@ -211,8 +211,7 @@ class ScaffoldController extends Controller
     protected function getDatabaseColumns($db = null, $tb = null)
     {
         $databases = Arr::where(config('database.connections', []), function ($value) {
-            $supports = ['mysql'];
-
+            $supports = ['mysql', 'sqlite'];
             return in_array(strtolower(Arr::get($value, 'driver')), $supports);
         });
 
@@ -220,56 +219,83 @@ class ScaffoldController extends Controller
 
         try {
             foreach ($databases as $connectName => $value) {
-                if ($db && $db != $value['database']) {
+                $driver = strtolower($value['driver']);
+                if ($db && $db != addslashes($value['database'])) {
                     continue;
                 }
 
-                $sql = sprintf('SELECT * FROM information_schema.columns WHERE table_schema = "%s"', $value['database']);
-
-                if ($tb) {
-                    $p = Arr::get($value, 'prefix');
-
-                    $sql .= " AND TABLE_NAME = '{$p}{$tb}'";
-                }
-
-                $sql .= ' ORDER BY `ORDINAL_POSITION` ASC';
-
-                $tmp = DB::connection($connectName)->select($sql);
-
-                $collection = collect($tmp)->map(function ($v) use ($value) {
-                    if (! $p = Arr::get($value, 'prefix')) {
-                        return (array) $v;
+                if ($driver === 'mysql') {
+                    // MySQL 原逻辑
+                    $sql = sprintf('SELECT * FROM information_schema.columns WHERE table_schema = "%s"', $value['database']);
+                    if ($tb) {
+                        $p = Arr::get($value, 'prefix');
+                        $sql .= " AND TABLE_NAME = '{$p}{$tb}'";
                     }
-                    $v = (array) $v;
+                    $sql .= ' ORDER BY `ORDINAL_POSITION` ASC';
 
-                    $v['TABLE_NAME'] = Str::replaceFirst($p, '', $v['TABLE_NAME']);
+                    $tmp = DB::connection($connectName)->select($sql);
 
-                    return $v;
-                });
-
-                $data[$value['database']] = $collection->groupBy('TABLE_NAME')->map(function ($v) {
-                    return collect($v)->keyBy('COLUMN_NAME')->map(function ($v) {
-                        $v['COLUMN_TYPE'] = strtolower($v['COLUMN_TYPE']);
-                        $v['DATA_TYPE'] = strtolower($v['DATA_TYPE']);
-
-                        if (Str::contains($v['COLUMN_TYPE'], 'unsigned')) {
-                            $v['DATA_TYPE'] .= '@unsigned';
+                    $collection = collect($tmp)->map(function ($v) use ($value) {
+                        if (! $p = Arr::get($value, 'prefix')) {
+                            return (array) $v;
                         }
+                        $v = (array) $v;
+                        $v['TABLE_NAME'] = Str::replaceFirst($p, '', $v['TABLE_NAME']);
+                        return $v;
+                    });
 
-                        return [
-                            'type'     => $v['DATA_TYPE'],
-                            'default'  => $v['COLUMN_DEFAULT'],
-                            'nullable' => $v['IS_NULLABLE'],
-                            'key'      => $v['COLUMN_KEY'],
-                            'id'       => $v['COLUMN_KEY'] === 'PRI',
-                            'comment'  => $v['COLUMN_COMMENT'],
-                        ];
+                    $data[$value['database']] = $collection->groupBy('TABLE_NAME')->map(function ($v) {
+                        return collect($v)->keyBy('COLUMN_NAME')->map(function ($v) {
+                            $v['COLUMN_TYPE'] = strtolower($v['COLUMN_TYPE']);
+                            $v['DATA_TYPE'] = strtolower($v['DATA_TYPE']);
+                            if (Str::contains($v['COLUMN_TYPE'], 'unsigned')) {
+                                $v['DATA_TYPE'] .= '@unsigned';
+                            }
+                            return [
+                                'type'     => $v['DATA_TYPE'],
+                                'default'  => $v['COLUMN_DEFAULT'],
+                                'nullable' => $v['IS_NULLABLE'],
+                                'key'      => $v['COLUMN_KEY'],
+                                'id'       => $v['COLUMN_KEY'] === 'PRI',
+                                'comment'  => $v['COLUMN_COMMENT'],
+                            ];
+                        })->toArray();
                     })->toArray();
-                })->toArray();
+
+                } elseif ($driver === 'sqlite') {
+                    $prefix = Arr::get($value, 'prefix', '');
+                    $tablesSql = "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'";
+                    if ($tb) {
+                        $tablesSql .= " AND name = '{$prefix}{$tb}'";
+                    }
+                    $tables = DB::connection($connectName)->select($tablesSql);
+                    $databaseName = $value['database'] ?? 'sqlite';
+                    $data[$databaseName] = [];
+                    foreach ($tables as $tableObj) {
+                        $tableName = $tableObj->name;
+                        $tableNameWithoutPrefix = Str::replaceFirst($prefix, '', $tableName);
+                        // 获取表字段信息
+                        $columns = DB::connection($connectName)->select("PRAGMA table_info('{$tableName}')");
+                        $columnsArr = [];
+                        foreach ($columns as $col) {
+                            $type = strtolower($col->type);
+                            $isPrimary = $col->pk == 1;
+                            $columnsArr[$col->name] = [
+                                'type'     => $type,
+                                'default'  => $col->dflt_value,
+                                'nullable' => $col->notnull == 0 ? 'YES' : 'NO',
+                                'key'      => $isPrimary ? 'PRI' : '',
+                                'id'       => $isPrimary,
+                                'comment'  => '', // SQLite 没有 comment
+                            ];
+                        }
+                        $data[$databaseName][$tableNameWithoutPrefix] = $columnsArr;
+                    }
+                }
             }
         } catch (\Throwable $e) {
+            // 你可以根据需要记录异常
         }
-
         return $data;
     }
 
