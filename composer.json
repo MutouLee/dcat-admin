@@ -1,6 +1,7 @@
 {
     "name": "dobeen/dcat-admin",
     "description": "dcat admin",
+    "version": "2.2.5",
     "type": "library",
     "keywords": [
         "dcat",
